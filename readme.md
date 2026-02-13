@@ -16,7 +16,7 @@ Built with **Node.js** and **TensorFlow.js (Universal/CPU)**, bypassing the need
 1. **Clone the repository**
 
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/dog-breed-classifier.git](https://github.com/YOUR_USERNAME/dog-breed-classifier.git)
+   git clone [https://github.com/pranavtelangade/dog-breed-classifier.git] (https://github.com/pranavtelangade/dog-breed-classifier.git)
    cd dog-breed-classifier
    ```
 
