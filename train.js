@@ -1,65 +1,48 @@
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-const tf = require('@tensorflow/tfjs');
-const { Jimp } = require('jimp');
-const fs = require('fs');
-const path = require('path');
-const path = require('path');
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // Bypass SSL issues
+const { Worker } = require("worker_threads");
+const os = require("os");
+const path = require("path");
+const fs = require("fs");
+const tf = require("@tensorflow/tfjs");
 
-const DATASET_PATH = path.join(__dirname, 'dataset');
-const IMAGE_SIZE = 224;
+// --- CONFIGURATION ---
+const DATASET_PATH = path.join(__dirname, "dataset");
+const MODEL_SAVE_PATH = path.join(
+  __dirname,
+  "models",
+  "dog-classification-model",
+);
+const BATCH_SIZE = 64; // Batch size for faster processing
+const EPOCHS = 20;
 
-async function loadAndProcessImage(filePath) {
-  const image = await Jimp.read(filePath);
-  image.cover({ w: IMAGE_SIZE, h: IMAGE_SIZE });
-  const { data } = image.bitmap;
-
-  return tf.tidy(() => {
-    // Convert RGBA to RGB [224, 224, 3]
-    const img = tf.tensor3d(new Uint8Array(data), [IMAGE_SIZE, IMAGE_SIZE, 4]);
-    return img.slice([0, 0, 0], [-1, -1, 3]).div(127.5).sub(1); // Normalize to [-1, 1]
-  });
-}
-
+// --- HELPER: Save Handler ---
 async function saveModelToDisk(model, dirPath) {
-  const fs = require('fs');
-  const path = require('path');
-
-  // Ensure the directory exists
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 
   await model.save(
     tf.io.withSaveHandler(async (artifacts) => {
-      // 1. Save the weights (the binary data)
       const weightData = Buffer.from(artifacts.weightData);
-      const weightFileName = 'weights.bin';
+      const weightFileName = "weights.bin";
       fs.writeFileSync(path.join(dirPath, weightFileName), weightData);
 
-      // 2. Save the topology (the JSON structure)
       const modelJSON = {
         modelTopology: artifacts.modelTopology,
         format: artifacts.format,
         generatedBy: artifacts.generatedBy,
         convertedBy: artifacts.convertedBy,
         weightsManifest: [
-          {
-            paths: ['./' + weightFileName],
-            weights: artifacts.weightSpecs,
-          },
+          { paths: ["./" + weightFileName], weights: artifacts.weightSpecs },
         ],
       };
       fs.writeFileSync(
-        path.join(dirPath, 'model.json'),
+        path.join(dirPath, "model.json"),
         JSON.stringify(modelJSON, null, 2),
       );
 
       return {
         modelArtifactsInfo: {
           dateSaved: new Date(),
-          modelTopologyType: 'JSON',
-          generatedBy: 'TensorFlow.js',
-          convertedBy: null,
+          modelTopologyType: "JSON",
           weightDataBytes: weightData.byteLength,
         },
       };
@@ -68,97 +51,211 @@ async function saveModelToDisk(model, dirPath) {
 }
 
 async function train() {
-  // 1. Filter out hidden system files (like .DS_Store or Thumbs.db)
-  const allDirs = fs.readdirSync(DATASET_PATH).filter((f) => {
-    return fs.statSync(path.join(DATASET_PATH, f)).isDirectory();
-  });
+  console.log("--- Starting Optimized Multi-Threaded Training (Online) ---");
 
-  // SAFETY LIMIT: Only take the first 3 folders for the first test run!
-  // Change this to 'allDirs' once you confirm it works fast enough.
-  const activeBreeds = allDirs.slice(0, 3);
+  // 1. Scan Dataset
+  if (!fs.existsSync(DATASET_PATH)) {
+    console.error(`Error: Dataset folder not found at ${DATASET_PATH}`);
+    return;
+  }
 
-  // Clean up the names: "n02085620-Chihuahua" -> "Chihuahua"
-  const classNames = activeBreeds.map((dir) => dir.split('-')[1] || dir);
+  const allDirs = fs
+    .readdirSync(DATASET_PATH)
+    .filter((f) => fs.statSync(path.join(DATASET_PATH, f)).isDirectory());
+  const activeBreeds = allDirs;
+  const classNames = activeBreeds.map((dir) => dir.split("-")[1] || dir);
   const numClasses = classNames.length;
 
-  console.log(`Training on ${numClasses} breeds: ${classNames.join(', ')}`);
+  console.log(`Classes Detected (${numClasses}): ${classNames.join(", ")}`);
 
-  // ... Load MobileNet (same as before) ...
+  // 2. Create Task List
+  let tasks = [];
+  activeBreeds.forEach((breed, index) => {
+    const breedDir = path.join(DATASET_PATH, breed);
+    const files = fs
+      .readdirSync(breedDir)
+      .filter((f) => f.match(/\.(jpg|jpeg|png)$/i));
+    files.forEach((file) => {
+      tasks.push({ filePath: path.join(breedDir, file), labelIndex: index });
+    });
+  });
+
+  console.log(`Found ${tasks.length} images total.`);
+
+  // 3. Load Models (ONLINE)
+  console.log("Loading MobileNet Base Model from Google Storage...");
+
+  // Using the original URL
   const mobilenet = await tf.loadLayersModel(
-    'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json',
+    "https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json",
   );
-  const layer = mobilenet.getLayer('conv_pw_13_relu');
+
+  const layer = mobilenet.getLayer("conv_pw_13_relu");
   const featureExtractor = tf.model({
     inputs: mobilenet.inputs,
     outputs: layer.output,
   });
 
-  // ... Build Head Model (same as before) ...
+  console.log("Building Head Model...");
   const model = tf.sequential({
     layers: [
       tf.layers.flatten({ inputShape: layer.outputShape.slice(1) }),
-      tf.layers.dense({ units: 100, activation: 'relu' }),
-      tf.layers.dense({ units: numClasses, activation: 'softmax' }),
+      tf.layers.dense({ units: 100, activation: "relu" }),
+      tf.layers.dense({ units: numClasses, activation: "softmax" }),
     ],
   });
 
   model.compile({
     optimizer: tf.train.adam(0.0001),
-    loss: 'categoricalCrossentropy',
-    metrics: ['accuracy'],
+    loss: "categoricalCrossentropy",
+    metrics: ["accuracy"],
   });
 
-  let xs = [];
-  let ys = [];
+  // 4. BATCH PROCESSING LOGIC
+  const numCPUs = os.cpus().length;
+  console.log(`Spawning ${numCPUs} worker threads...`);
 
-  // Loop through the selected breeds
-  for (let i = 0; i < activeBreeds.length; i++) {
-    const breedDir = path.join(DATASET_PATH, activeBreeds[i]);
-    const files = fs.readdirSync(breedDir);
+  const processedFeatureBatches = [];
+  const processedLabelBatches = [];
+  let completedCount = 0;
 
-    console.log(`Processing ${classNames[i]} (${files.length} images)...`);
+  // Temporary buffers for batching
+  let imageBuffer = [];
+  let labelBuffer = [];
 
-    for (const file of files) {
-      // Skip non-image files just in case
-      if (!file.match(/\.(jpg|jpeg|png)$/i)) continue;
+  // Function to process a full batch
+  const flushBatch = () => {
+    if (imageBuffer.length === 0) return;
 
-      try {
-        const imgTensor = await loadAndProcessImage(path.join(breedDir, file));
-        const features = featureExtractor.predict(imgTensor.expandDims(0));
+    // FIX: We get the tensors OUT of tf.tidy first
+    const batchResult = tf.tidy(() => {
+      // Stack images into one big tensor [BatchSize, 224, 224, 3]
+      const imgBatchTensor = tf.stack(imageBuffer);
 
-        xs.push(features);
-        ys.push(tf.oneHot(i, numClasses));
+      // Run MobileNet ONCE on the whole batch
+      const features = featureExtractor.predict(imgBatchTensor);
 
-        imgTensor.dispose(); // Important for memory!
-      } catch (err) {
-        console.log(`Skipped bad image: ${file}`);
+      // Stack labels
+      const labels = tf.stack(labelBuffer);
+
+      // CRITICAL: Return them! This tells tf.tidy "Don't delete these!"
+      return { features, labels };
+    });
+
+    // NOW it is safe to push them to the array
+    processedFeatureBatches.push(batchResult.features);
+    processedLabelBatches.push(batchResult.labels);
+
+    // Clean up the individual input tensors (we don't need them anymore)
+    imageBuffer.forEach((t) => t.dispose());
+    labelBuffer.forEach((t) => t.dispose());
+
+    // Reset buffers
+    imageBuffer = [];
+    labelBuffer = [];
+  };
+
+  await new Promise((resolve) => {
+    let activeWorkers = 0;
+    let taskIndex = 0;
+
+    const startWorker = () => {
+      if (taskIndex >= tasks.length) return;
+
+      const worker = new Worker("./worker.js");
+      activeWorkers++;
+
+      const chunkSize = Math.ceil(tasks.length / numCPUs);
+      const myTasks = tasks.slice(taskIndex, taskIndex + chunkSize);
+      taskIndex += chunkSize;
+
+      if (myTasks.length === 0) {
+        worker.terminate();
+        activeWorkers--;
+        return;
       }
-    }
-  }
 
-  // ... The rest (concatenation, fit, save) remains the same ...
-  const trainX = tf.concat(xs);
-  const trainY = tf.stack(ys);
+      myTasks.forEach((t) => worker.postMessage(t));
+      let tasksFinished = 0;
 
-  console.log('Starting training...');
+      worker.on("message", (msg) => {
+        tasksFinished++;
+
+        if (msg.status === "success") {
+          // 1. Create Tensor from raw buffer
+          const imgTensor = tf.tidy(() => {
+            return tf
+              .tensor3d(new Uint8Array(msg.buffer), [224, 224, 4])
+              .slice([0, 0, 0], [-1, -1, 3])
+              .div(127.5)
+              .sub(1);
+          });
+
+          // 2. Add to buffer
+          imageBuffer.push(imgTensor);
+          labelBuffer.push(tf.oneHot(msg.labelIndex, numClasses));
+
+          completedCount++;
+          process.stdout.write(
+            `\rProgress: ${completedCount}/${tasks.length} images`,
+          );
+
+          // 3. If buffer is full, FLUSH IT
+          if (imageBuffer.length >= BATCH_SIZE) {
+            flushBatch();
+          }
+        }
+
+        if (tasksFinished >= myTasks.length) {
+          worker.terminate();
+          activeWorkers--;
+
+          if (activeWorkers === 0) {
+            flushBatch(); // Process remaining
+            console.log("\nAll workers finished.");
+            resolve();
+          }
+        }
+      });
+
+      worker.on("error", (err) => console.error("Worker Error:", err));
+    };
+
+    for (let i = 0; i < numCPUs; i++) startWorker();
+  });
+
+  // 5. Training Phase
+  console.log("Merging batches for training...");
+
+  const trainX = tf.concat(processedFeatureBatches);
+  const trainY = tf.concat(processedLabelBatches);
+
+  // Clean up batches
+  processedFeatureBatches.forEach((t) => t.dispose());
+  processedLabelBatches.forEach((t) => t.dispose());
+
+  console.log("Starting Model Training...");
   await model.fit(trainX, trainY, {
-    epochs: 20,
+    epochs: EPOCHS,
+    batchSize: BATCH_SIZE,
+    shuffle: true,
     callbacks: {
       onEpochEnd: (epoch, logs) =>
-        console.log(`Epoch ${epoch}: loss = ${logs.loss.toFixed(4)}`),
+        console.log(
+          `Epoch ${epoch + 1}: loss=${logs.loss.toFixed(4)} accuracy=${logs.acc.toFixed(4)}`,
+        ),
     },
   });
 
-  await saveModelToDisk(
-    model,
-    path.join(__dirname, 'models', 'dog-classification-model'),
-  );
-
+  // 6. Saving
+  console.log("Saving Model...");
+  await saveModelToDisk(model, MODEL_SAVE_PATH);
   fs.writeFileSync(
-    path.join(__dirname, 'models', 'dog-classification-model', 'labels.json'),
+    path.join(MODEL_SAVE_PATH, "labels.json"),
     JSON.stringify(classNames),
   );
-  console.log('Model saved successfully using custom handler!');
+
+  console.log(`Success! Model saved to: ${MODEL_SAVE_PATH}`);
 }
 
 train();

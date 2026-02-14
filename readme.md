@@ -5,7 +5,7 @@ Built with **Node.js** and **TensorFlow.js (Universal/CPU)**, bypassing the need
 
 ## 🚀 Features
 
-- **Dataset Used:** https://www.kaggle.com/datasets/yaswanthgali/dog-images
+- **Dataset Used:** https://www.kaggle.com/datasets/yaswanthgali/dog-images **_[20580 images - 120 dog breeds]_**
 - **Transfer Learning:** Uses MobileNet (v1 0.25) as a feature extractor.
 - **Custom Head:** A trained dense layer classifier for specific breeds.
 - **Universal Backend:** Runs on pure JavaScript/WASM (no `gyp` or C++ compiler needed).
@@ -22,10 +22,10 @@ Built with **Node.js** and **TensorFlow.js (Universal/CPU)**, bypassing the need
 
 2. **Install Dependencies**
 
-```bash
-npm install
-Note: This uses @tensorflow/tfjs (CPU version) instead of tfjs-node to ensure compatibility with all Windows environments.
-```
+   ```bash
+   npm install
+   Note: This uses @tensorflow/tfjs (CPU version) instead of tfjs-node to ensure compatibility with all Windows environments.
+   ```
 
 ## 🏃‍♂️ Usage
 
@@ -49,17 +49,19 @@ http://localhost:3000/predict?path=path\to\image
 
 If you want to retrain the model on your own dataset:
 
-Place your images in a dataset/ folder, organized by breed name.
+Place your images in a **dataset/** folder, organized by breed name.
 
 Run the training script:
 
-```Bash
+```bash
 node train.js
 Note: Training runs on CPU and may take time for large datasets.
 ```
 
 ## 📂 Project Structure
 
-server.js - The Inference API.
-train.js - The Transfer Learning training script.
-model/ - Contains the saved TensorFlow.js model artifacts (model.json, weights.bin).
+- server.js - The Inference API.
+- train.js - The Transfer Learning training script.
+- worker.js - The Transfer Learning used to split trainer into workers.
+- model/ - Contains the saved TensorFlow.js model artifacts (model. json, weights.bin).
+- dataset/ - Should contain the data used to train the model.
